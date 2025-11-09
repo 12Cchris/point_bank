@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>포인트 은행 시스템 (Firebase 연동)</title>
+  <style>
+    body{font-family:"Pretendard",sans-serif;text-align:center;padding:30px;background:linear-gradient(135deg,#a8edea,#fed6e3);color:#333;}
+    input,button{padding:10px 14px;margin:6px;border-radius:8px;border:none;font-size:15px;}
+    button{cursor:pointer;background:#6c63ff;color:#fff;transition:background 0.3s;}
+    button:hover{background:#514bff;}
+    .box{background:#fff;padding:25px 40px;border-radius:14px;display:inline-block;margin-top:20px;box-shadow:0 4px 15px rgba(0,0,0,0.1);}
+  </style>
+</head>
+<body>
+  <h1>포인트 은행 시스템</h1>
+  <div id="login">
+    <p>닉네임 입력:</p>
+    <input type="text" id="nicknameInput" placeholder="예: 석주" />
+    <button id="nicknameBtn">시작</button>
+  </div>
+
+  <div id="game" class="box" style="display:none;">
+    <h2 id="nick">닉네임: </h2>
+    <p>보유 포인트: <span id="points">0</span> P</p>
+    <p>은행 잔고: <span id="bank">0</span> P</p>
+
+    <input type="number" id="amount" placeholder="금액 입력" />
+    <br/>
+    <button id="deposit">예금</button>
+    <button id="withdraw">인출</button>
+    <br/><br/>
+    <button id="earn">+10 포인트 얻기</button>
+    <br/><br/>
+    <input type="number" id="rate" value="1.0" step="0.1" style="width:70px;"> % /분 (이자율)
+    <br/><br/>
+    <div id="log" style="text-align:left;height:120px;overflow:auto;padding:8px;background:#eee;border-radius:6px;"></div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
+    import { getDatabase, ref, set, get, update, push } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-database.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
+
+    // ✅ 실제 프로젝트 정보 (clicker-dc943)
+    const firebaseConfig = {
+      apiKey: "AIzaSyC-MtgjlEwQ7AX1Wl3OrnCwcZMQK1WnUUs",
+      authDomain: "clicker-dc943.firebaseapp.com",
+      databaseURL: "https://clicker-dc943-default-rtdb.asia-southeast1.firebasedatabase.app/",
+      projectId: "clicker-dc943",
+      storageBucket: "clicker-dc943.appspot.com",
+      messagingSenderId: "260210837373",
+      appId: "1:260210837373:web:f0ae35be236cd52edb0f62"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+    const auth = getAuth();
+
+    const state = {
+      uid: null,
+      nickname: null,
+      points: 0,
+      bank: 0,
+      ratePerMinute: 1.0,
+      lastTimestamp: Date.now()
+    };
+
+    const el = id => document.getElementById(id);
+    const logEl = el("log");
+    function log(msg){
+      const t = new Date().toLocaleTimeString();
+      logEl.innerHTML = `[${t}] ${msg}<br>` + logEl.innerHTML;
+    }
+
+    // 🔐 익명 로그인
+    signInAnonymously(auth).catch(err=>console.error(err));
+    onAuthStateChanged(auth, user => {
+      if(user){
+        state.uid = user.uid;
+        log("Firebase 로그인 완료: " + state.uid);
+      }
+    });
+
+    // 닉네임 설정
+    el("nicknameBtn").addEventListener("click", async () => {
+      const name = el("nicknameInput").value.trim();
+      if(!name){ alert("닉네임을 입력해주세요."); return; }
+      state.nickname = name;
+
+      const userRef = ref(db, `players/${state.uid}`);
+      const snap = await get(userRef);
+      if(!snap.exists()){
+        await set(userRef, {
+          nickname: name,
+          points: 0,
+          bank: 0,
+          ratePerMinute: 1.0,
+          lastTimestamp: Date.now()
+        });
+        log("새 플레이어 생성됨.");
+      } else {
+        const data = snap.val();
+        Object.assign(state, data);
+        log("기존 플레이어 데이터 불러옴.");
+      }
+
+      el("login").style.display = "none";
+      el("game").style.display = "block";
+      el("nick").textContent = `닉네임: ${name}`;
+      render();
+    });
+
+    function render(){
+      el("points").textContent = Math.floor(state.points);
+      el("bank").textContent = Math.floor(state.bank);
+      el("rate").value = state.ratePerMinute;
+    }
+
+    async function saveData(){
+      await update(ref(db, `players/${state.uid}`), {
+        nickname: state.nickname,
+        points: state.points,
+        bank: state.bank,
+        ratePerMinute: state.ratePerMinute,
+        lastTimestamp: Date.now()
+      });
+    }
+
+    async function recordHistory(type, amt){
+      await push(ref(db, `players/${state.uid}/history`), {
+        time: new Date().toISOString(),
+        type, amount: amt
+      });
+    }
+
+    el("earn").addEventListener("click", async () => {
+      state.points += 10;
+      render(); await saveData(); await recordHistory("earn", 10);
+      log("+10 포인트 획득");
+    });
+
+    el("deposit").addEventListener("click", async () => {
+      const amt = Number(el("amount").value);
+      if(!amt || amt <= 0){ log("금액 입력 필요"); return; }
+      if(state.points < amt){ log("포인트 부족"); return; }
+      state.points -= amt; state.bank += amt;
+      render(); await saveData(); await recordHistory("deposit", amt);
+      log(`${amt}P 예금`);
+    });
+
+    el("withdraw").addEventListener("click", async () => {
+      const amt = Number(el("amount").value);
+      if(!amt || amt <= 0){ log("금액 입력 필요"); return; }
+      if(state.bank < amt){ log("은행 잔고 부족"); return; }
+      state.bank -= amt; state.points += amt;
+      render(); await saveData(); await recordHistory("withdraw", amt);
+      log(`${amt}P 인출`);
+    });
+
+    el("rate").addEventListener("change", async () => {
+      state.ratePerMinute = Number(el("rate").value);
+      render(); await saveData();
+      log(`이자율 변경: ${state.ratePerMinute}%/분`);
+    });
+
+    // 💰 자동 이자 (5초마다)
+    setInterval(async () => {
+      if(!state.uid) return;
+      const now = Date.now();
+      const elapsedSec = Math.floor((now - state.lastTimestamp) / 1000);
+      if(elapsedSec > 0 && state.bank > 0){
+        const rate = state.ratePerMinute / 100;
+        const perSec = Math.pow(1 + rate, 1/60) - 1;
+        const newBank = Math.floor(state.bank * Math.pow(1 + perSec, elapsedSec));
+        const diff = newBank - state.bank;
+        if(diff > 0){
+          state.bank = newBank;
+          log(`이자 발생: +${diff}P`);
+        }
+      }
+      state.lastTimestamp = now;
+      await saveData();
+      render();
+    }, 5000);
+  </script>
+</body>
+</html>
